@@ -1,0 +1,92 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function pinDocPath() {
+      return /databases/$(database)/documents/config/teacher;
+    }
+
+    function isTeacher() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/teacherSessions/$(request.auth.uid));
+    }
+
+    function validPin(p) {
+      return p is string && p.matches('^[0-9]{4}$');
+    }
+
+    function roomData(pin) {
+      return get(/databases/$(database)/documents/rooms/$(pin)).data;
+    }
+
+    function canStudentSubmit(pin, sid) {
+      return signedIn()
+        && roomData(pin).status == 'open'
+        && sid in roomData(pin).studentIds;
+    }
+
+    function validScore(v) {
+      return v is int && v >= 1 && v <= 4;
+    }
+
+    match /config/teacher {
+      allow read: if false;
+      allow create: if signedIn() && validPin(request.resource.data.pinCode);
+      allow update: if isTeacher() && validPin(request.resource.data.pinCode);
+    }
+
+    match /config/status {
+      allow read: if signedIn();
+      allow create: if signedIn() && existsAfter(pinDocPath());
+    }
+
+    match /teacherSessions/{uid} {
+      allow get: if signedIn() && request.auth.uid == uid;
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.resource.data.code == getAfter(pinDocPath()).data.pinCode;
+      allow delete: if signedIn() && request.auth.uid == uid;
+    }
+
+    match /classes/{id} {
+      allow read, write: if isTeacher();
+    }
+
+    match /templates/{id} {
+      allow read, write: if isTeacher();
+    }
+
+    match /evaluations/{id} {
+      allow read, write: if isTeacher();
+    }
+
+    match /rooms/{pin} {
+      allow get: if signedIn();
+      allow list, create, update, delete: if isTeacher();
+
+      match /private/{docId} {
+        allow read, write: if isTeacher();
+      }
+
+      match /submissions/{sid} {
+        allow read, delete: if isTeacher();
+        allow create: if canStudentSubmit(pin, sid)
+          && request.resource.data.studentId == sid
+          && request.resource.data.uid == request.auth.uid
+          && (!('selfScore' in request.resource.data) || validScore(request.resource.data.selfScore))
+          && existsAfter(/databases/$(database)/documents/rooms/$(pin)/done/$(sid));
+      }
+
+      match /done/{sid} {
+        allow read: if signedIn();
+        allow delete: if isTeacher();
+        allow create: if canStudentSubmit(pin, sid)
+          && request.resource.data.uid == request.auth.uid
+          && existsAfter(/databases/$(database)/documents/rooms/$(pin)/submissions/$(sid));
+      }
+    }
+  }
+}
